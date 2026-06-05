@@ -1,7 +1,7 @@
 # ---------- RESOURCE GROUP ----------
 resource "azurerm_resource_group" "rg" {
   name     = "rg-nssa320-${var.student_id}"
-  location = "eastus"
+  location = "centralus"
 }
 
 # ---------- VIRTUAL NETWORK ----------
@@ -12,6 +12,7 @@ resource "azurerm_virtual_network" "vnet" {
   resource_group_name = azurerm_resource_group.rg.name
 }
 
+# ---------- SUBNET ----------
 resource "azurerm_subnet" "subnet" {
   name                 = "subnet1"
   resource_group_name  = azurerm_resource_group.rg.name
@@ -26,7 +27,7 @@ resource "azurerm_network_security_group" "nsg" {
   resource_group_name = azurerm_resource_group.rg.name
 
   security_rule {
-    name                       = "Allow_SSH"
+    name                       = "SSH"
     priority                   = 1001
     direction                  = "Inbound"
     access                     = "Allow"
@@ -44,13 +45,7 @@ resource "azurerm_public_ip" "pip" {
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   allocation_method   = "Static"
-  sku                 = "Standard"
-}
-
-# ---------- Associate NSG with Subnet (This was missing!) ----------
-resource "azurerm_subnet_network_security_group_association" "nsg_assoc" {
-  subnet_id                 = azurerm_subnet.subnet.id
-  network_security_group_id = azurerm_network_security_group.nsg.id
+  sku                 = "Basic"
 }
 
 # ---------- NETWORK INTERFACE ----------
@@ -60,11 +55,17 @@ resource "azurerm_network_interface" "nic" {
   resource_group_name = azurerm_resource_group.rg.name
 
   ip_configuration {
-    name                          = "ipconfig"
+    name                          = "internal"
     subnet_id                     = azurerm_subnet.subnet.id
     private_ip_address_allocation = "Dynamic"
     public_ip_address_id          = azurerm_public_ip.pip.id
   }
+}
+
+# ---------- NSG ASSOCIATION ----------
+resource "azurerm_subnet_network_security_group_association" "nsg_assoc" {
+  subnet_id                 = azurerm_subnet.subnet.id
+  network_security_group_id = azurerm_network_security_group.nsg.id
 }
 
 # ---------- LINUX VIRTUAL MACHINE ----------
@@ -74,13 +75,16 @@ resource "azurerm_linux_virtual_machine" "vm" {
   location            = azurerm_resource_group.rg.location
   size                = var.vm_size
   admin_username      = "azureuser"
+
+  disable_password_authentication = true
+
   network_interface_ids = [
     azurerm_network_interface.nic.id
   ]
 
   admin_ssh_key {
     username   = "azureuser"
-    public_key = file("C:/Users/student/.ssh/azure_rsa.pub")
+    public_key = file("C:/Users/Student/.ssh/azure_rsa.pub")
   }
 
   os_disk {
@@ -95,9 +99,3 @@ resource "azurerm_linux_virtual_machine" "vm" {
     version   = "latest"
   }
 }
-
-# ---------- OUTPUTS ----------
-output "ssh_command" {
-  value = "ssh -i C:/Users/Student/.ssh/azure_rsa azureuser@${azurerm_public_ip.pip.ip_address}"
-}
-
