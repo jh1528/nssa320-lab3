@@ -1,0 +1,18 @@
+# Terraform local/cache files
+.terraform/
+.terraform.lock.hcl
+
+# Terraform state files may contain sensitive/resource-specific data
+*.tfstate
+*.tfstate.*
+
+# Local Azure SKU troubleshooting exports
+*-skus.json
+filtered-sku.txt
+filtered-skus.txt
+
+# Local notes / senestive ID
+Subscription ID.txt
+
+# Logs
+.logs
