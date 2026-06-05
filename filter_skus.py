@@ -1,106 +1,337 @@
 """
 Script: filter_skus.py
+Version: 1.3
 
 Purpose:
-    Reads Azure VM SKU JSON files for selected regions and prints a filtered list
-    of small/low-cost VM sizes that may be useful for the Terraform Azure lab.
+    Reads Azure VM SKU JSON files for selected regions and creates a filtered
+    report of small/lab-sized VM sizes that may be useful for the Terraform Azure lab.
 
 Preconditions:
-    1. Azure CLI has already been used to export SKU data into JSON files.
-       Expected files in the same folder as this script:
-           - eastus-skus.json
-           - centralus-skus.json
-           - westus-skus.json
+    1. Azure CLI has already exported SKU data into JSON files:
+           eastus-skus.json
+           centralus-skus.json
+           westus-skus.json
 
-    2. The JSON files were created with commands similar to:
+    2. The JSON files were created with commands like:
            az vm list-skus --location eastus --resource-type virtualMachines --all --output json > eastus-skus.json
-           az vm list-skus --location centralus --resource-type virtualMachines --all --output json > centralus-skus.json
-           az vm list-skus --location westus --resource-type virtualMachines --all --output json > westus-skus.json
 
-    3. Python 3 is installed and can be run from PowerShell.
+    3. Python 3 is installed and can run from PowerShell.
 
 Postconditions:
-    1. The script prints a table showing:
-           - Azure region
-           - VM size/SKU name
-           - availability status
-
-    2. VM sizes with no restrictions are printed as AVAILABLE.
-
-    3. VM sizes with Azure subscription or location restrictions display the
-       Azure restriction reason, such as NotAvailableForSubscription.
-
-    4. The script does not modify Azure resources, Terraform files, or JSON files.
+    1. Prints a table showing region, VM size, lab-size classification, and restriction status.
+    2. Creates a fresh filtered-skus.txt report on each run.
+    3. Writes the same report to filtered-skus.txt.
+    4. Shows counts for total lab-sized SKUs checked, available SKUs, and restricted SKUs.
+    5. Marks unrestricted VM sizes as AVAILABLE.
+    6. Reports missing, empty, invalid, or unreadable JSON files instead of crashing.
+    7. Attempts multiple encodings because Windows PowerShell redirection may create UTF-16 files.
+    8. Does not modify Azure resources, Terraform files, or JSON input files.
 """
 
 import json
+import re
+from json import JSONDecodeError
 from pathlib import Path
 
 
-# List of Azure region JSON files to inspect.
-# Each tuple contains:
-#   1. The human-readable Azure region name.
-#   2. The JSON filename exported from Azure CLI.
-files = [
+SCRIPT_VERSION = "1.3"
+OUTPUT_FILE = "filtered-skus.txt"
+
+
+FILES = [
     ("eastus", "eastus-skus.json"),
     ("centralus", "centralus-skus.json"),
     ("westus", "westus-skus.json"),
 ]
 
 
-# Small/low-cost VM size prefixes worth checking for this lab.
-# The lab originally uses Standard_B1s and later Standard_B2ms,
-# but this list includes several similar small VM families in case
-# the student's Azure subscription blocks the original sizes.
-wanted_prefixes = (
-    "Standard_B1",
-    "Standard_B2",
-    "Standard_A1",
-    "Standard_A2",
-    "Standard_DS1",
-    "Standard_D2",
-    "Standard_F1",
-    "Standard_F2",
+# Purpose:
+#     Match only small/lab-sized VM SKUs.
+#
+# Why this matters:
+#     A simple prefix check like "Standard_D2" accidentally matches large SKUs
+#     such as "Standard_D21s_v7". This regex only allows B1/B2, A1/A2, DS1,
+#     D2, F1/F2, and prevents the next character from being another digit.
+#
+# Examples that match:
+#     Standard_B1s
+#     Standard_B2ms
+#     Standard_A1_v2
+#     Standard_DS1_v2
+#     Standard_D2d_v3
+#     Standard_F2s_v2
+#
+# Examples that do not match:
+#     Standard_B12ms
+#     Standard_D21s_v7
+#     Standard_D128s_v6
+SMALL_LAB_SKU_PATTERN = re.compile(
+    r"^Standard_(B[12]|A[12]|DS1|D2|F[12])([^0-9]|$)",
+    re.IGNORECASE,
 )
 
 
-# Print table header.
-# <12 and <22 mean left-align the text in fixed-width columns.
-print(f"{'REGION':<12} {'SIZE':<22} {'RESTRICTIONS'}")
-print("-" * 80)
+ENCODINGS_TO_TRY = (
+    "utf-8",
+    "utf-8-sig",
+    "utf-16",
+    "utf-16-le",
+)
 
 
-# Process each region's SKU JSON file.
-for region, filename in files:
-    path = Path(filename)
+report_lines = []
 
-    # If a JSON file is missing, report it and continue with the next region.
+
+summary_counts = {
+    "total_checked": 0,
+    "available": 0,
+    "restricted": 0,
+}
+
+
+def add_report_line(line=""):
+    """
+    Purpose:
+        Add a line to the report and print it to stdout.
+
+    Preconditions:
+        line is a string.
+
+    Postconditions:
+        The line is printed to the terminal and stored for output file writing.
+    """
+
+    print(line)
+    report_lines.append(line)
+
+
+def reset_report_file():
+    """
+    Purpose:
+        Remove the previous report file before generating a new one.
+
+    Preconditions:
+        OUTPUT_FILE is the configured report filename.
+
+    Postconditions:
+        Deletes the old report file if it exists.
+        Does nothing if the report file does not exist.
+    """
+
+    output_path = Path(OUTPUT_FILE)
+
+    if output_path.exists():
+        output_path.unlink()
+
+
+def load_json_file(path):
+    """
+    Purpose:
+        Safely load a JSON file exported from Azure CLI.
+
+    Preconditions:
+        path is a pathlib.Path object pointing to a JSON file.
+
+    Postconditions:
+        Returns parsed JSON data if valid.
+        Returns None if the file is missing, empty, invalid JSON, or unreadable.
+        Attempts multiple encodings because Windows PowerShell redirection may
+        create UTF-16 files.
+    """
+
     if not path.exists():
-        print(f"{region:<12} missing file: {filename}")
-        continue
+        add_report_line(f"ERROR: Missing file: {path}")
+        return None
 
-    # Load the Azure SKU data from the JSON file.
-    data = json.loads(path.read_text())
+    if path.stat().st_size == 0:
+        add_report_line(f"ERROR: Empty file: {path}")
+        return None
 
-    # Check each VM SKU returned by Azure CLI.
-    for sku in data:
+    for encoding in ENCODINGS_TO_TRY:
+        try:
+            file_text = path.read_text(encoding=encoding)
+            return json.loads(file_text)
+
+        except UnicodeDecodeError:
+            continue
+
+        except JSONDecodeError as error:
+            add_report_line(f"ERROR: Invalid JSON file: {path}")
+            add_report_line(f"       Encoding tried: {encoding}")
+            add_report_line(f"       JSON error: {error}")
+            add_report_line("       First few lines of file:")
+
+            try:
+                preview_text = path.read_text(encoding=encoding, errors="replace")
+                for line in preview_text.splitlines()[:5]:
+                    add_report_line(f"       {line}")
+            except Exception as preview_error:
+                add_report_line(f"       Could not preview file: {preview_error}")
+
+            return None
+
+    add_report_line(f"ERROR: Could not decode file with supported encodings: {path}")
+    add_report_line(f"       Tried encodings: {', '.join(ENCODINGS_TO_TRY)}")
+    return None
+
+
+def is_small_lab_sku(sku_name):
+    """
+    Purpose:
+        Determine whether an Azure VM SKU name is appropriate for a small lab test.
+
+    Preconditions:
+        sku_name is a string from an Azure SKU object.
+
+    Postconditions:
+        Returns True if the SKU matches the small/lab-sized SKU pattern.
+        Returns False otherwise.
+    """
+
+    return SMALL_LAB_SKU_PATTERN.search(sku_name) is not None
+
+
+def get_restriction_status(restrictions):
+    """
+    Purpose:
+        Convert Azure SKU restriction data into a readable status string.
+
+    Preconditions:
+        restrictions is a list from an Azure SKU object.
+
+    Postconditions:
+        Returns AVAILABLE if no restrictions exist.
+        Otherwise returns one or more Azure restriction reason codes.
+    """
+
+    if not restrictions:
+        return "AVAILABLE"
+
+    return "; ".join(
+        restriction.get("reasonCode", "UnknownRestriction")
+        for restriction in restrictions
+    )
+
+
+def update_summary_counts(status):
+    """
+    Purpose:
+        Update summary counters for lab-sized SKU results.
+
+    Preconditions:
+        status is a string returned by get_restriction_status().
+
+    Postconditions:
+        Increments total_checked.
+        Increments available if status is AVAILABLE.
+        Otherwise increments restricted.
+    """
+
+    summary_counts["total_checked"] += 1
+
+    if status == "AVAILABLE":
+        summary_counts["available"] += 1
+    else:
+        summary_counts["restricted"] += 1
+
+
+def print_matching_skus(region, sku_data):
+    """
+    Purpose:
+        Add small/lab-sized VM SKUs for one Azure region to the report.
+
+    Preconditions:
+        region is a string such as eastus, centralus, or westus.
+        sku_data is a parsed list of Azure SKU dictionaries.
+
+    Postconditions:
+        Adds one report row per matching lab-sized VM SKU.
+        Updates summary counts.
+    """
+
+    for sku in sku_data:
         name = sku.get("name", "")
         restrictions = sku.get("restrictions", [])
 
-        # Skip VM sizes that are not in the small/low-cost families we care about.
-        if not name.startswith(wanted_prefixes):
+        if not is_small_lab_sku(name):
             continue
 
-        # If the restrictions list is empty, Azure reports this SKU as usable.
-        if not restrictions:
-            restriction_text = "AVAILABLE"
-        else:
-            # Otherwise, extract Azure's restriction reason, such as:
-            # NotAvailableForSubscription
-            restriction_text = "; ".join(
-                r.get("reasonCode", "UnknownRestriction")
-                for r in restrictions
-            )
+        lab_size = "SMALL"
+        status = get_restriction_status(restrictions)
+        update_summary_counts(status)
 
-        # Print one filtered result row.
-        print(f"{region:<12} {name:<22} {restriction_text}")
+        add_report_line(f"{region:<12} {name:<22} {lab_size:<10} {status}")
+
+
+def print_summary():
+    """
+    Purpose:
+        Print summary counts for the filtered report.
+
+    Preconditions:
+        summary_counts has been updated while processing SKU files.
+
+    Postconditions:
+        Adds summary totals to stdout and filtered-skus.txt.
+    """
+
+    add_report_line("")
+    add_report_line("Summary")
+    add_report_line("-" * 80)
+    add_report_line(f"Total lab-sized SKUs checked: {summary_counts['total_checked']}")
+    add_report_line(f"Available lab-sized SKUs:     {summary_counts['available']}")
+    add_report_line(f"Restricted lab-sized SKUs:    {summary_counts['restricted']}")
+
+
+def write_report_file():
+    """
+    Purpose:
+        Write the collected report lines to a text file.
+
+    Preconditions:
+        report_lines contains the report output.
+
+    Postconditions:
+        Creates or overwrites filtered-skus.txt using UTF-8 encoding.
+    """
+
+    output_path = Path(OUTPUT_FILE)
+    output_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+    print(f"\nReport written to: {output_path}")
+
+
+def main():
+    """
+    Purpose:
+        Main script entry point.
+
+    Preconditions:
+        Azure SKU JSON export files exist in the same folder as this script.
+
+    Postconditions:
+        Removes the previous filtered-skus.txt file if it exists.
+        Prints filtered Azure VM SKU availability results to stdout.
+        Writes the results to a fresh filtered-skus.txt report.
+    """
+
+    reset_report_file()
+
+    add_report_line(f"filter_skus.py version {SCRIPT_VERSION}")
+    add_report_line(f"{'REGION':<12} {'SIZE':<22} {'LAB_SIZE':<10} {'STATUS'}")
+    add_report_line("-" * 80)
+
+    for region, filename in FILES:
+        path = Path(filename)
+        sku_data = load_json_file(path)
+
+        if sku_data is None:
+            continue
+
+        print_matching_skus(region, sku_data)
+
+    print_summary()
+    write_report_file()
+
+
+if __name__ == "__main__":
+    main()
