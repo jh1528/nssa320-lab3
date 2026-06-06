@@ -6,13 +6,24 @@
 *.tfstate
 *.tfstate.*
 
+# Terraform plan/debug output
+*.tfplan
+plan.out
+result*.txt
+terraform-plan*.txt
+
 # Local Azure SKU troubleshooting exports
 *-skus.json
 filtered-sku.txt
 filtered-skus.txt
 
-# Local notes / senestive ID
+# Local notes / sensitive IDs
 Subscription ID.txt
+subscription*.txt
+
+# Lab report / submission documents
+*.docx
+*.pdf
 
 # Logs
-.logs
+*.log
