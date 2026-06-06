@@ -37,6 +37,18 @@ resource "azurerm_network_security_group" "nsg" {
     source_address_prefix      = "*"
     destination_address_prefix = "*"
   }
+
+  security_rule {
+    name                       = "HTTP"
+    priority                   = 1002
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "80"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
 }
 
 # ---------- PUBLIC IP ----------
@@ -47,6 +59,7 @@ resource "azurerm_public_ip" "pip" {
   allocation_method   = "Static"
   sku                 = "Standard"
 }
+
 # ---------- NETWORK INTERFACE ----------
 resource "azurerm_network_interface" "nic" {
   name                = "nic-${var.student_id}"
@@ -96,5 +109,23 @@ resource "azurerm_linux_virtual_machine" "vm" {
     offer     = "0001-com-ubuntu-server-jammy"
     sku       = "22_04-lts"
     version   = "latest"
+  }
+
+  connection {
+    type        = "ssh"
+    host        = self.public_ip_address
+    user        = "azureuser"
+    private_key = file("C:/Users/Student/.ssh/azure_rsa")
+    timeout     = "10m"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sleep 60",
+      "sudo apt-get update -y",
+      "sudo apt-get install -y nginx",
+      "sudo systemctl enable --now nginx",
+      "echo 'Nginx installed successfully via Terraform!' | sudo tee /var/www/html/index.html",
+    ]
   }
 }
