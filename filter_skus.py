@@ -1,6 +1,6 @@
 """
 Script: filter_skus.py
-Version: 1.5
+Version: 1.4
 
 Purpose:
     Reads Azure VM SKU JSON files for selected regions and creates a filtered
@@ -18,8 +18,7 @@ Preconditions:
     3. Python 3 is installed and can run from PowerShell.
 
 Postconditions:
-    1. Prints a table showing region, VM size, CPU, RAM, temp disk, network capability,
-       lab-size classification, priority, and restriction status.
+    1. Prints a table showing region, VM size, lab-size classification, priority, and restriction status.
     2. Creates a fresh filtered-skus.txt report on each run.
     3. Writes the same report to filtered-skus.txt.
     4. Shows counts for total lab-sized SKUs checked, available SKUs, and restricted SKUs.
@@ -36,7 +35,7 @@ from json import JSONDecodeError
 from pathlib import Path
 
 
-SCRIPT_VERSION = "1.5"
+SCRIPT_VERSION = "1.4"
 OUTPUT_FILE = "filtered-skus.txt"
 
 
@@ -204,102 +203,6 @@ def load_json_file(path):
     return None
 
 
-def get_capability_value(sku, capability_name, default="UNKNOWN"):
-    """
-    Purpose:
-        Read a named capability value from an Azure VM SKU object.
-
-    Preconditions:
-        sku is a dictionary from Azure SKU JSON data.
-        capability_name is the Azure capability name to find, such as:
-            vCPUs
-            MemoryGB
-            MaxResourceVolumeMB
-            MaxNetworkInterfaces
-            AcceleratedNetworkingEnabled
-
-    Postconditions:
-        Returns the capability value as a string if the capability exists.
-        Returns default if the capability is missing.
-
-    Why this matters:
-        Azure stores CPU, memory, temporary disk, and network facts inside a
-        capabilities list. This helper prevents repeated loop code throughout
-        the script.
-    """
-
-    for capability in sku.get("capabilities", []):
-        if capability.get("name") == capability_name:
-            return capability.get("value", default)
-
-    return default
-
-
-def mb_to_gb(value):
-    """
-    Purpose:
-        Convert a megabyte value from Azure SKU capabilities into gigabytes.
-
-    Preconditions:
-        value should be a string or number representing megabytes.
-
-    Postconditions:
-        Returns a rounded GB number if conversion succeeds.
-        Returns UNKNOWN if the value cannot be converted.
-
-    Why this matters:
-        Azure reports MaxResourceVolumeMB in MB, but GB is easier for students
-        and teams to read in the report.
-    """
-
-    try:
-        return round(int(value) / 1024, 1)
-    except (TypeError, ValueError):
-        return "UNKNOWN"
-
-
-def get_sku_capability_summary(sku):
-    """
-    Purpose:
-        Collect the most useful VM capability details for the lab report.
-
-    Preconditions:
-        sku is a dictionary from Azure SKU JSON data.
-
-    Postconditions:
-        Returns a dictionary containing:
-            vcpus
-            memory_gb
-            temp_disk_gb
-            max_nics
-            accelerated_networking
-            family
-
-    Why this matters:
-        The original script showed whether a VM size was small and available.
-        This summary also shows quota and sizing clues:
-            vCPUs affect quota.
-            RAM helps estimate whether a VM is too large or too small.
-            Temporary disk GB explains local/resource disk size.
-            Network fields show basic NIC and accelerated networking support.
-            Family helps connect the VM size to Azure quota family.
-    """
-
-    temp_disk_mb = get_capability_value(sku, "MaxResourceVolumeMB")
-
-    return {
-        "vcpus": get_capability_value(sku, "vCPUs"),
-        "memory_gb": get_capability_value(sku, "MemoryGB"),
-        "temp_disk_gb": mb_to_gb(temp_disk_mb),
-        "max_nics": get_capability_value(sku, "MaxNetworkInterfaces"),
-        "accelerated_networking": get_capability_value(
-            sku,
-            "AcceleratedNetworkingEnabled",
-        ),
-        "family": sku.get("family", "UNKNOWN"),
-    }
-
-
 def is_small_lab_sku(sku_name):
     """
     Purpose:
@@ -383,7 +286,7 @@ def update_summary_counts(status):
         summary_counts["restricted"] += 1
 
 
-def record_available_candidate(region, sku_name, priority, reason, capabilities):
+def record_available_candidate(region, sku_name, priority, reason):
     """
     Purpose:
         Store an available lab-sized SKU candidate for recommendation.
@@ -393,14 +296,9 @@ def record_available_candidate(region, sku_name, priority, reason, capabilities)
         sku_name is the Azure VM SKU name.
         priority is an integer where lower is preferred.
         reason describes why the SKU has that priority.
-        capabilities is a dictionary returned by get_sku_capability_summary().
 
     Postconditions:
         Adds the candidate to available_candidates.
-
-    Why this matters:
-        The final recommendation can now include CPU, RAM, temp disk, network,
-        and family details for the selected VM size.
     """
 
     available_candidates.append(
@@ -409,7 +307,6 @@ def record_available_candidate(region, sku_name, priority, reason, capabilities)
             "sku_name": sku_name,
             "priority": priority,
             "reason": reason,
-            "capabilities": capabilities,
         }
     )
 
@@ -427,7 +324,6 @@ def print_matching_skus(region, sku_data):
         Adds one report row per matching lab-sized VM SKU.
         Updates summary counts.
         Records available candidates for final recommendation.
-        Shows CPU, RAM, temp disk, network, family, priority, and status.
     """
 
     for sku in sku_data:
@@ -440,25 +336,14 @@ def print_matching_skus(region, sku_data):
         lab_size = "SMALL"
         status = get_restriction_status(restrictions)
         priority, reason = get_sku_priority(name)
-        capabilities = get_sku_capability_summary(sku)
 
         update_summary_counts(status)
 
         if status == "AVAILABLE":
-            record_available_candidate(region, name, priority, reason, capabilities)
+            record_available_candidate(region, name, priority, reason)
 
         add_report_line(
-            f"{region:<12} "
-            f"{name:<22} "
-            f"{capabilities['vcpus']:<6} "
-            f"{capabilities['memory_gb']:<8} "
-            f"{capabilities['temp_disk_gb']:<10} "
-            f"{capabilities['max_nics']:<8} "
-            f"{capabilities['accelerated_networking']:<10} "
-            f"{capabilities['family']:<22} "
-            f"{lab_size:<10} "
-            f"{priority:<8} "
-            f"{status}"
+            f"{region:<12} {name:<22} {lab_size:<10} {priority:<8} {status}"
         )
 
 
@@ -493,7 +378,6 @@ def print_recommendation():
     Postconditions:
         Prints the best available candidate based on priority ranking.
         If no available candidates exist, prints a clear message.
-        Includes VM capability details for the recommended SKU.
     """
 
     add_report_line("")
@@ -515,18 +399,11 @@ def print_recommendation():
     )
 
     best_candidate = sorted_candidates[0]
-    capabilities = best_candidate["capabilities"]
 
-    add_report_line(f"Region:                 {best_candidate['region']}")
-    add_report_line(f"VM Size:                {best_candidate['sku_name']}")
-    add_report_line(f"vCPUs:                  {capabilities['vcpus']}")
-    add_report_line(f"RAM GB:                 {capabilities['memory_gb']}")
-    add_report_line(f"Temp Disk GB:           {capabilities['temp_disk_gb']}")
-    add_report_line(f"Max NICs:               {capabilities['max_nics']}")
-    add_report_line(f"Accelerated Networking: {capabilities['accelerated_networking']}")
-    add_report_line(f"Family:                 {capabilities['family']}")
-    add_report_line(f"Priority:               {best_candidate['priority']}")
-    add_report_line(f"Reason:                 {best_candidate['reason']}")
+    add_report_line(f"Region:   {best_candidate['region']}")
+    add_report_line(f"VM Size:  {best_candidate['sku_name']}")
+    add_report_line(f"Priority: {best_candidate['priority']}")
+    add_report_line(f"Reason:   {best_candidate['reason']}")
     add_report_line("")
     add_report_line("Terraform setting:")
     add_report_line(f'vm_size = "{best_candidate["sku_name"]}"')
@@ -568,19 +445,9 @@ def main():
 
     add_report_line(f"filter_skus.py version {SCRIPT_VERSION}")
     add_report_line(
-        f"{'REGION':<12} "
-        f"{'SIZE':<22} "
-        f"{'vCPUs':<6} "
-        f"{'RAM_GB':<8} "
-        f"{'TEMP_GB':<10} "
-        f"{'MAX_NIC':<8} "
-        f"{'ACCEL_NET':<10} "
-        f"{'FAMILY':<22} "
-        f"{'LAB_SIZE':<10} "
-        f"{'PRIORITY':<8} "
-        f"{'STATUS'}"
+        f"{'REGION':<12} {'SIZE':<22} {'LAB_SIZE':<10} {'PRIORITY':<8} {'STATUS'}"
     )
-    add_report_line("-" * 150)
+    add_report_line("-" * 100)
 
     for region, filename in FILES:
         path = Path(filename)
